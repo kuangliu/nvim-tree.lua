@@ -53,7 +53,7 @@ function M.get_config()
     show_folder_icon = show_icons.folders == 1,
     show_git_icon = show_icons.git == 1,
     show_folder_arrows = show_icons.folder_arrows == 1,
-    has_devicons = has_devicons,
+    has_devicons = false,
     icons = icons,
   }
 end
