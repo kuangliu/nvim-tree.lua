@@ -45,11 +45,23 @@ function M.fn(node)
     return
   end
 
+  local binary = M.config.trash.cmd:gsub(" .*$", "")
+  if vim.fn.executable(binary) == 0 then
+    utils.warn(binary .. " is not executable.")
+    return
+  end
+
+  local err_msg = ""
+  local function on_stderr(_, data)
+    err_msg = err_msg .. (data and table.concat(data, " "))
+  end
+
   -- trashes a path (file or folder)
   local function trash_path(on_exit)
     vim.fn.jobstart(M.config.trash.cmd .. ' "' .. node.absolute_path .. '"', {
       detach = true,
       on_exit = on_exit,
+      on_stderr = on_stderr,
     })
   end
 
@@ -69,22 +81,35 @@ function M.fn(node)
   -- trashing
   if is_confirmed then
     if node.nodes ~= nil and not node.link_to then
-      trash_path(function()
+      trash_path(function(_, rc)
+        if rc ~= 0 then
+          utils.warn("trash failed: " .. err_msg .. "; please see :help nvim-tree.trash")
+          return
+        end
         events._dispatch_folder_removed(node.absolute_path)
-        require("nvim-tree.actions.reloaders").reload_explorer()
+        if M.enable_reload then
+          require("nvim-tree.actions.reloaders.reloaders").reload_explorer()
+        end
       end)
     else
-      trash_path(function()
+      trash_path(function(_, rc)
+        if rc ~= 0 then
+          utils.warn("trash failed: " .. err_msg .. "; please see :help nvim-tree.trash")
+          return
+        end
         events._dispatch_file_removed(node.absolute_path)
         clear_buffer(node.absolute_path)
-        require("nvim-tree.actions.reloaders").reload_explorer()
+        if M.enable_reload then
+          require("nvim-tree.actions.reloaders.reloaders").reload_explorer()
+        end
       end)
     end
   end
 end
 
 function M.setup(opts)
-  M.config.trash = opts or {}
+  M.config.trash = opts.trash or {}
+  M.enable_reload = not opts.filesystem_watchers.enable
 end
 
 return M

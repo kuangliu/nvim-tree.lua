@@ -1,11 +1,16 @@
+local core = require "nvim-tree.core"
+local diagnostics = require "nvim-tree.diagnostics"
 local log = require "nvim-tree.log"
 local view = require "nvim-tree.view"
+
 local _padding = require "nvim-tree.renderer.components.padding"
 local icon_component = require "nvim-tree.renderer.components.icons"
+local full_name = require "nvim-tree.renderer.components.full-name"
 local help = require "nvim-tree.renderer.help"
 local git = require "nvim-tree.renderer.components.git"
-local core = require "nvim-tree.core"
 local Builder = require "nvim-tree.renderer.builder"
+local live_filter = require "nvim-tree.live-filter"
+local marks = require "nvim-tree.marks"
 
 local api = vim.api
 
@@ -15,11 +20,15 @@ local M = {
 
 local namespace_id = api.nvim_create_namespace "NvimTreeHighlights"
 
-local function _draw(bufnr, lines, hl)
+local function _draw(bufnr, lines, hl, signs)
   api.nvim_buf_set_option(bufnr, "modifiable", true)
   api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   M.render_hl(bufnr, hl)
   api.nvim_buf_set_option(bufnr, "modifiable", false)
+  vim.fn.sign_unplace(git.SIGN_GROUP)
+  for _, sign in pairs(signs) do
+    vim.fn.sign_place(0, git.SIGN_GROUP, sign.sign, bufnr, { lnum = sign.lnum, priority = 1 })
+  end
 end
 
 function M.render_hl(bufnr, hl)
@@ -32,28 +41,12 @@ function M.render_hl(bufnr, hl)
   end
 end
 
-local function should_show_arrows()
-  return not M.config.indent_markers.enable
-    and icon_component.configs.show_folder_icon
-    and icon_component.configs.show_folder_arrows
-end
-
 local picture_map = {
   jpg = true,
   jpeg = true,
   png = true,
   gif = true,
 }
-
-local function get_special_files_map()
-  return vim.g.nvim_tree_special_files
-    or {
-      ["Cargo.toml"] = true,
-      Makefile = true,
-      ["README.md"] = true,
-      ["readme.md"] = true,
-    }
-end
 
 function M.draw()
   local bufnr = view.get_bufnr()
@@ -64,44 +57,56 @@ function M.draw()
   local ps = log.profile_start "draw"
 
   local cursor = api.nvim_win_get_cursor(view.get_winnr())
-  _padding.reload_padding_function()
-  icon_component.reset_config(M.config.icons.webdev_colors)
-  git.reload()
+  icon_component.reset_config()
 
   local lines, hl
+  local signs = {}
   if view.is_help_ui() then
     lines, hl = help.compute_lines()
   else
-    lines, hl = Builder.new(core.get_cwd())
-      :configure_initial_depth(should_show_arrows())
-      :configure_root_modifier(vim.g.nvim_tree_root_folder_modifier)
-      :configure_trailing_slash(vim.g.nvim_tree_add_trailing == 1)
-      :configure_special_map(get_special_files_map())
+    lines, hl, signs = Builder.new(core.get_cwd())
+      :configure_root_modifier(M.config.root_folder_modifier)
+      :configure_trailing_slash(M.config.add_trailing)
+      :configure_special_files(M.config.special_files)
       :configure_picture_map(picture_map)
-      :configure_opened_file_highlighting(vim.g.nvim_tree_highlight_opened_files)
-      :configure_git_icons_padding(vim.g.nvim_tree_icon_padding)
+      :configure_opened_file_highlighting(M.config.highlight_opened_files)
+      :configure_git_icons_padding(M.config.icons.padding)
+      :configure_git_icons_placement(M.config.icons.git_placement)
+      :configure_symlink_destination(M.config.symlink_destination)
+      :configure_filter(live_filter.filter, live_filter.prefix)
       :build_header(view.is_root_folder_visible(core.get_cwd()))
       :build(core.get_explorer())
       :unwrap()
   end
 
-  _draw(bufnr, lines, hl)
+  _draw(bufnr, lines, hl, signs)
+
   M.last_highlights = hl
 
   if cursor and #lines >= cursor[1] then
     api.nvim_win_set_cursor(view.get_winnr(), cursor)
   end
 
+  if view.is_help_ui() then
+    diagnostics.clear()
+    marks.clear()
+  else
+    diagnostics.update()
+    marks.draw()
+  end
+
+  view.grow_from_content()
+
   log.profile_end(ps, "draw")
 end
 
 function M.setup(opts)
-  M.config = {
-    indent_markers = opts.renderer.indent_markers,
-    icons = opts.renderer.icons,
-  }
+  M.config = opts.renderer
 
   _padding.setup(opts)
+  full_name.setup(opts)
+  git.setup(opts)
+  icon_component.setup(opts)
 end
 
 return M

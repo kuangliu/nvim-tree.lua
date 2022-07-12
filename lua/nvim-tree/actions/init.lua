@@ -1,135 +1,244 @@
 local a = vim.api
 
-local lib = require "nvim-tree.lib"
 local log = require "nvim-tree.log"
 local view = require "nvim-tree.view"
 local util = require "nvim-tree.utils"
 local nvim_tree_callback = require("nvim-tree.config").nvim_tree_callback
 
-local M = {
-  mappings = {
-    { key = { "<CR>", "o", "<2-LeftMouse>" }, action = "edit" },
-    { key = "<C-e>", action = "edit_in_place" },
-    { key = "O", action = "edit_no_picker" },
-    { key = { "<2-RightMouse>", "<C-]>" }, action = "cd" },
-    { key = "<C-v>", action = "vsplit" },
-    { key = "<C-x>", action = "split" },
-    { key = "<C-t>", action = "tabnew" },
-    { key = "<", action = "prev_sibling" },
-    { key = ">", action = "next_sibling" },
-    { key = "P", action = "parent_node" },
-    { key = "<BS>", action = "close_node" },
-    { key = "<Tab>", action = "preview" },
-    { key = "K", action = "first_sibling" },
-    { key = "J", action = "last_sibling" },
-    { key = "I", action = "toggle_git_ignored" },
-    { key = "H", action = "toggle_dotfiles" },
-    { key = "R", action = "refresh" },
-    { key = "a", action = "create" },
-    { key = "d", action = "remove" },
-    { key = "D", action = "trash" },
-    { key = "r", action = "rename" },
-    { key = "<C-r>", action = "full_rename" },
-    { key = "x", action = "cut" },
-    { key = "c", action = "copy" },
-    { key = "p", action = "paste" },
-    { key = "y", action = "copy_name" },
-    { key = "Y", action = "copy_path" },
-    { key = "gy", action = "copy_absolute_path" },
-    { key = "[c", action = "prev_git_item" },
-    { key = "]c", action = "next_git_item" },
-    { key = "-", action = "dir_up" },
-    { key = "s", action = "system_open" },
-    { key = "q", action = "close" },
-    { key = "g?", action = "toggle_help" },
-    { key = "W", action = "collapse_all" },
-    { key = "S", action = "search_node" },
-    { key = ".", action = "run_file_command" },
-    { key = "<C-k>", action = "toggle_file_info" },
-    { key = "U", action = "toggle_custom" },
+-- BEGIN_DEFAULT_MAPPINGS
+local DEFAULT_MAPPINGS = {
+  {
+    key = { "<CR>", "o", "<2-LeftMouse>" },
+    action = "edit",
+    desc = "open a file or folder; root will cd to the above directory",
   },
+  {
+    key = "<C-e>",
+    action = "edit_in_place",
+    desc = "edit the file in place, effectively replacing the tree explorer",
+  },
+  {
+    key = "O",
+    action = "edit_no_picker",
+    desc = "same as (edit) with no window picker",
+  },
+  {
+    key = { "<C-]>", "<2-RightMouse>" },
+    action = "cd",
+    desc = "cd in the directory under the cursor",
+  },
+  {
+    key = "<C-v>",
+    action = "vsplit",
+    desc = "open the file in a vertical split",
+  },
+  {
+    key = "<C-x>",
+    action = "split",
+    desc = "open the file in a horizontal split",
+  },
+  {
+    key = "<C-t>",
+    action = "tabnew",
+    desc = "open the file in a new tab",
+  },
+  {
+    key = "<",
+    action = "prev_sibling",
+    desc = "navigate to the previous sibling of current file/directory",
+  },
+  {
+    key = ">",
+    action = "next_sibling",
+    desc = "navigate to the next sibling of current file/directory",
+  },
+  {
+    key = "P",
+    action = "parent_node",
+    desc = "move cursor to the parent directory",
+  },
+  {
+    key = "<BS>",
+    action = "close_node",
+    desc = "close current opened directory or parent",
+  },
+  {
+    key = "<Tab>",
+    action = "preview",
+    desc = "open the file as a preview (keeps the cursor in the tree)",
+  },
+  {
+    key = "K",
+    action = "first_sibling",
+    desc = "navigate to the first sibling of current file/directory",
+  },
+  {
+    key = "J",
+    action = "last_sibling",
+    desc = "navigate to the last sibling of current file/directory",
+  },
+  {
+    key = "I",
+    action = "toggle_git_ignored",
+    desc = "toggle visibility of files/folders hidden via |git.ignore| option",
+  },
+  {
+    key = "H",
+    action = "toggle_dotfiles",
+    desc = "toggle visibility of dotfiles via |filters.dotfiles| option",
+  },
+  {
+    key = "U",
+    action = "toggle_custom",
+    desc = "toggle visibility of files/folders hidden via |filters.custom| option",
+  },
+  {
+    key = "R",
+    action = "refresh",
+    desc = "refresh the tree",
+  },
+  {
+    key = "a",
+    action = "create",
+    desc = "add a file; leaving a trailing `/` will add a directory",
+  },
+  {
+    key = "d",
+    action = "remove",
+    desc = "delete a file (will prompt for confirmation)",
+  },
+  {
+    key = "D",
+    action = "trash",
+    desc = "trash a file via |trash| option",
+  },
+  {
+    key = "r",
+    action = "rename",
+    desc = "rename a file",
+  },
+  {
+    key = "<C-r>",
+    action = "full_rename",
+    desc = "rename a file and omit the filename on input",
+  },
+  {
+    key = "x",
+    action = "cut",
+    desc = "add/remove file/directory to cut clipboard",
+  },
+  {
+    key = "c",
+    action = "copy",
+    desc = "add/remove file/directory to copy clipboard",
+  },
+  {
+    key = "p",
+    action = "paste",
+    desc = "paste from clipboard; cut clipboard has precedence over copy; will prompt for confirmation",
+  },
+  {
+    key = "y",
+    action = "copy_name",
+    desc = "copy name to system clipboard",
+  },
+  {
+    key = "Y",
+    action = "copy_path",
+    desc = "copy relative path to system clipboard",
+  },
+  {
+    key = "gy",
+    action = "copy_absolute_path",
+    desc = "copy absolute path to system clipboard",
+  },
+  {
+    key = "[e",
+    action = "prev_diag_item",
+    desc = "go to next diagnostic item",
+  },
+  {
+    key = "[c",
+    action = "prev_git_item",
+    desc = "go to next git item",
+  },
+  {
+    key = "]e",
+    action = "next_diag_item",
+    desc = "go to prev diagnostic item",
+  },
+  {
+    key = "]c",
+    action = "next_git_item",
+    desc = "go to prev git item",
+  },
+  {
+    key = "-",
+    action = "dir_up",
+    desc = "navigate up to the parent directory of the current file/directory",
+  },
+  {
+    key = "s",
+    action = "system_open",
+    desc = "open a file with default system application or a folder with default file manager, using |system_open| option",
+  },
+  {
+    key = "f",
+    action = "live_filter",
+    desc = "live filter nodes dynamically based on regex matching.",
+  },
+  {
+    key = "F",
+    action = "clear_live_filter",
+    desc = "clear live filter",
+  },
+  {
+    key = "q",
+    action = "close",
+    desc = "close tree window",
+  },
+  {
+    key = "W",
+    action = "collapse_all",
+    desc = "collapse the whole tree",
+  },
+  {
+    key = "E",
+    action = "expand_all",
+    desc = "expand the whole tree, stopping after expanding |actions.expand_all.max_folder_discovery| folders; this might hang neovim for a while if running on a big folder",
+  },
+  {
+    key = "S",
+    action = "search_node",
+    desc = "prompt the user to enter a path and then expands the tree to match the path",
+  },
+  {
+    key = ".",
+    action = "run_file_command",
+    desc = "enter vim command mode with the file the cursor is on",
+  },
+  {
+    key = "<C-k>",
+    action = "toggle_file_info",
+    desc = "toggle a popup with file infos about the file under the cursor",
+  },
+  {
+    key = "g?",
+    action = "toggle_help",
+    desc = "toggle help",
+  },
+  {
+    key = "m",
+    action = "toggle_mark",
+    desc = "Toggle node in bookmarks",
+  },
+}
+-- END_DEFAULT_MAPPINGS
+
+local M = {
+  mappings = {},
   custom_keypress_funcs = {},
 }
-
-local keypress_funcs = {
-  close = view.close,
-  close_node = require("nvim-tree.actions.movements").parent_node(true),
-  collapse_all = require("nvim-tree.actions.collapse-all").fn,
-  copy_absolute_path = require("nvim-tree.actions.copy-paste").copy_absolute_path,
-  copy_name = require("nvim-tree.actions.copy-paste").copy_filename,
-  copy_path = require("nvim-tree.actions.copy-paste").copy_path,
-  copy = require("nvim-tree.actions.copy-paste").copy,
-  create = require("nvim-tree.actions.create-file").fn,
-  cut = require("nvim-tree.actions.copy-paste").cut,
-  dir_up = require("nvim-tree.actions.dir-up").fn,
-  first_sibling = require("nvim-tree.actions.movements").sibling(-math.huge),
-  full_rename = require("nvim-tree.actions.rename-file").fn(true),
-  last_sibling = require("nvim-tree.actions.movements").sibling(math.huge),
-  next_git_item = require("nvim-tree.actions.movements").find_git_item "next",
-  next_sibling = require("nvim-tree.actions.movements").sibling(1),
-  parent_node = require("nvim-tree.actions.movements").parent_node(false),
-  paste = require("nvim-tree.actions.copy-paste").paste,
-  prev_git_item = require("nvim-tree.actions.movements").find_git_item "prev",
-  prev_sibling = require("nvim-tree.actions.movements").sibling(-1),
-  refresh = require("nvim-tree.actions.reloaders").reload_explorer,
-  remove = require("nvim-tree.actions.remove-file").fn,
-  rename = require("nvim-tree.actions.rename-file").fn(false),
-  run_file_command = require("nvim-tree.actions.run-command").run_file_command,
-  search_node = require("nvim-tree.actions.search-node").fn,
-  toggle_file_info = require("nvim-tree.actions.file-popup").toggle_file_info,
-  system_open = require("nvim-tree.actions.system-open").fn,
-  toggle_dotfiles = require("nvim-tree.actions.toggles").dotfiles,
-  toggle_help = require("nvim-tree.actions.toggles").help,
-  toggle_custom = require("nvim-tree.actions.toggles").custom,
-  toggle_git_ignored = require("nvim-tree.actions.toggles").git_ignored,
-  trash = require("nvim-tree.actions.trash").fn,
-}
-
-function M.on_keypress(action)
-  if view.is_help_ui() and action == "close" then
-    action = "toggle_help"
-  end
-  if view.is_help_ui() and action ~= "toggle_help" then
-    return
-  end
-  local node = lib.get_node_at_cursor()
-  if not node then
-    return
-  end
-
-  local custom_function = M.custom_keypress_funcs[action]
-  local default_function = keypress_funcs[action]
-
-  if type(custom_function) == "function" then
-    return custom_function(node)
-  elseif default_function then
-    return default_function(node)
-  end
-
-  if action == "preview" then
-    if node.name == ".." then
-      return
-    end
-    if not node.nodes then
-      return require("nvim-tree.actions.open-file").fn("preview", node.absolute_path)
-    end
-  elseif node.name == ".." then
-    return require("nvim-tree.actions.change-dir").fn ".."
-  elseif action == "cd" then
-    if node.nodes ~= nil then
-      require("nvim-tree.actions.change-dir").fn(lib.get_last_group_node(node).absolute_path)
-    end
-    return
-  end
-
-  if node.link_to and not node.nodes then
-    require("nvim-tree.actions.open-file").fn(action, node.link_to)
-  elseif node.nodes ~= nil then
-    lib.expand_or_collapse(node)
-  else
-    require("nvim-tree.actions.open-file").fn(action, node.absolute_path)
-  end
-end
 
 function M.apply_mappings(bufnr)
   for _, b in pairs(M.mappings) do
@@ -216,17 +325,40 @@ local function copy_mappings(user_mappings)
   return user_mappings
 end
 
+local function cleanup_existing_mappings()
+  local bufnr = view.get_bufnr()
+  if bufnr == nil or not a.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  for _, b in pairs(M.mappings) do
+    if type(b.key) == "table" then
+      for _, key in pairs(b.key) do
+        a.nvim_buf_del_keymap(bufnr, b.mode or "n", key)
+      end
+    else
+      a.nvim_buf_del_keymap(bufnr, b.mode or "n", b.key)
+    end
+  end
+end
+
 local DEFAULT_MAPPING_CONFIG = {
   custom_only = false,
   list = {},
 }
 
 function M.setup(opts)
-  require("nvim-tree.actions.system-open").setup(opts.system_open)
-  require("nvim-tree.actions.trash").setup(opts.trash)
-  require("nvim-tree.actions.open-file").setup(opts)
-  require("nvim-tree.actions.change-dir").setup(opts)
-  require("nvim-tree.actions.copy-paste").setup(opts)
+  require("nvim-tree.actions.fs.trash").setup(opts)
+  require("nvim-tree.actions.node.system-open").setup(opts)
+  require("nvim-tree.actions.node.open-file").setup(opts)
+  require("nvim-tree.actions.root.change-dir").setup(opts)
+  require("nvim-tree.actions.fs.create-file").setup(opts)
+  require("nvim-tree.actions.fs.rename-file").setup(opts)
+  require("nvim-tree.actions.fs.remove-file").setup(opts)
+  require("nvim-tree.actions.fs.copy-paste").setup(opts)
+  require("nvim-tree.actions.tree-modifiers.expand-all").setup(opts)
+
+  cleanup_existing_mappings()
+  M.mappings = vim.deepcopy(DEFAULT_MAPPINGS)
 
   local user_map_config = (opts.view or {}).mappings or {}
   local options = vim.tbl_deep_extend("force", DEFAULT_MAPPING_CONFIG, user_map_config)
@@ -235,6 +367,8 @@ function M.setup(opts)
   else
     M.mappings = merge_mappings(options.list)
   end
+
+  require("nvim-tree.actions.dispatch").setup(M.custom_keypress_funcs)
 
   log.line("config", "active mappings")
   log.raw("config", "%s\n", vim.inspect(M.mappings))

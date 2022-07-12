@@ -6,6 +6,7 @@ local builders = require "nvim-tree.explorer.node-builders"
 local common = require "nvim-tree.explorer.common"
 local sorters = require "nvim-tree.explorer.sorters"
 local filters = require "nvim-tree.explorer.filters"
+local live_filter = require "nvim-tree.live-filter"
 
 local M = {}
 
@@ -29,15 +30,20 @@ local function populate_children(handle, cwd, node, status)
       and not filters.should_ignore_git(abs, status.files)
       and not nodes_by_path[abs]
     then
+      local child = nil
       if t == "directory" and uv.fs_access(abs, "R") then
-        table.insert(node.nodes, builders.folder(node, abs, name, status, node_ignored))
+        child = builders.folder(node, abs, name)
       elseif t == "file" then
-        table.insert(node.nodes, builders.file(node, abs, name, status, node_ignored))
+        child = builders.file(node, abs, name)
       elseif t == "link" then
-        local link = builders.link(node, abs, name, status, node_ignored)
+        local link = builders.link(node, abs, name)
         if link.link_to ~= nil then
-          table.insert(node.nodes, link)
+          child = link
         end
+      end
+      if child then
+        table.insert(node.nodes, child)
+        common.update_git_status(child, node_ignored, status)
       end
     end
   end
@@ -53,7 +59,7 @@ local function get_dir_handle(cwd)
 end
 
 function M.explore(node, status)
-  local cwd = node.cwd or node.link_to or node.absolute_path
+  local cwd = node.link_to or node.absolute_path
   local handle = get_dir_handle(cwd)
   if not handle then
     return
@@ -61,9 +67,9 @@ function M.explore(node, status)
 
   populate_children(handle, cwd, node, status)
 
-  local is_root = node.cwd ~= nil
+  local is_root = not node.parent
   local child_folder_only = common.has_one_child_folder(node) and node.nodes[1]
-  if vim.g.nvim_tree_group_empty == 1 and not is_root and child_folder_only then
+  if M.config.group_empty and not is_root and child_folder_only then
     node.group_next = child_folder_only
     local ns = M.explore(child_folder_only, status)
     node.nodes = ns or {}
@@ -71,7 +77,12 @@ function M.explore(node, status)
   end
 
   sorters.merge_sort(node.nodes, sorters.node_comparator)
+  live_filter.apply_filter(node)
   return node.nodes
+end
+
+function M.setup(opts)
+  M.config = opts.renderer
 end
 
 return M

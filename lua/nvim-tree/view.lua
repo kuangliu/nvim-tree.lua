@@ -4,7 +4,15 @@ local M = {}
 
 local events = require "nvim-tree.events"
 
+local function get_win_sep_hl()
+  -- #1221 WinSeparator not present in nvim 0.6.1 and some builds of 0.7.0
+  local has_win_sep = pcall(vim.cmd, "silent hi WinSeparator")
+  return has_win_sep and "WinSeparator:NvimTreeWinSeparator" or "VertSplit:NvimTreeWinSeparator"
+end
+
 M.View = {
+  adaptive_size = false,
+  centralize_selection = false,
   tabpages = {},
   cursors = {},
   hide_root_folder = false,
@@ -27,7 +35,7 @@ M.View = {
       "EndOfBuffer:NvimTreeEndOfBuffer",
       "Normal:NvimTreeNormal",
       "CursorLine:NvimTreeCursorLine",
-      "VertSplit:NvimTreeVertSplit",
+      get_win_sep_hl(),
       "StatusLine:NvimTreeStatusLine",
       "StatusLineNC:NvimTreeStatuslineNC",
       "SignColumn:NvimTreeSignColumn",
@@ -47,7 +55,6 @@ local tabinitial = {
 }
 
 local BUFNR_PER_TAB = {}
-local LAST_FOCUSED_WIN = nil
 local BUFFER_OPTIONS = {
   swapfile = false,
   buftype = "nofile",
@@ -108,48 +115,48 @@ local move_tbl = {
   top = "K",
 }
 
--- TODO: remove this once they fix https://github.com/neovim/neovim/issues/14670
-local function set_local(opt, value)
-  local cmd
-  if value == true then
-    cmd = string.format("setlocal %s", opt)
-  elseif value == false then
-    cmd = string.format("setlocal no%s", opt)
-  else
-    cmd = string.format("setlocal %s=%s", opt, value)
-  end
-  vim.cmd(cmd)
-end
-
 -- setup_tabpage sets up the initial state of a tab
 local function setup_tabpage(tabpage)
   local winnr = a.nvim_get_current_win()
   M.View.tabpages[tabpage] = vim.tbl_extend("force", M.View.tabpages[tabpage] or tabinitial, { winnr = winnr })
 end
 
+local function set_window_options_and_buffer()
+  pcall(vim.cmd, "buffer " .. M.get_bufnr())
+  for k, v in pairs(M.View.winopts) do
+    vim.opt_local[k] = v
+  end
+end
+
 local function open_window()
   a.nvim_command "vsp"
   M.reposition_window()
   setup_tabpage(a.nvim_get_current_tabpage())
+  set_window_options_and_buffer()
 end
 
-local function set_window_options_and_buffer()
-  pcall(vim.cmd, "buffer " .. M.get_bufnr())
-  for k, v in pairs(M.View.winopts) do
-    set_local(k, v)
+local function is_buf_displayed(buf)
+  return a.nvim_buf_is_valid(buf) and vim.fn.buflisted(buf) == 1
+end
+
+local function get_alt_or_next_buf()
+  local alt_buf = vim.fn.bufnr "#"
+  if is_buf_displayed(alt_buf) then
+    return alt_buf
   end
-end
 
-local function get_existing_buffers()
-  return vim.tbl_filter(function(buf)
-    return a.nvim_buf_is_valid(buf) and vim.fn.buflisted(buf) == 1
-  end, a.nvim_list_bufs())
+  for _, buf in ipairs(a.nvim_list_bufs()) do
+    if is_buf_displayed(buf) then
+      return buf
+    end
+  end
 end
 
 local function switch_buf_if_last_buf()
   if #a.nvim_list_wins() == 1 then
-    if #get_existing_buffers() > 0 then
-      vim.cmd "sbnext"
+    local buf = get_alt_or_next_buf()
+    if buf then
+      vim.cmd("sb" .. buf)
     else
       vim.cmd "new"
     end
@@ -173,8 +180,9 @@ function M.close()
   for _, win in pairs(a.nvim_list_wins()) do
     if tree_win ~= win and a.nvim_win_get_config(win).relative == "" then
       a.nvim_win_close(tree_win, true)
-      if tree_win == current_win and LAST_FOCUSED_WIN then
-        a.nvim_set_current_win(LAST_FOCUSED_WIN)
+      local prev_win = vim.fn.winnr "#" -- this tab only
+      if tree_win == current_win and prev_win > 0 then
+        a.nvim_set_current_win(vim.fn.win_getid(prev_win))
       end
       events._dispatch_on_tree_close()
       return
@@ -187,10 +195,8 @@ function M.open(options)
     return
   end
 
-  LAST_FOCUSED_WIN = a.nvim_get_current_win()
   create_buffer()
   open_window()
-  set_window_options_and_buffer()
   M.resize()
 
   local opts = options or { focus_tree = true }
@@ -198,6 +204,25 @@ function M.open(options)
     vim.cmd "wincmd p"
   end
   events._dispatch_on_tree_open()
+end
+
+local function grow()
+  local starts_at = M.is_root_folder_visible(require("nvim-tree.core").get_cwd()) and 1 or 0
+  local lines = vim.api.nvim_buf_get_lines(M.get_bufnr(), starts_at, -1, false)
+  local max_length = M.View.initial_width
+  for _, l in pairs(lines) do
+    if max_length < #l then
+      max_length = #l
+    end
+  end
+  M.resize(max_length)
+end
+
+function M.grow_from_content()
+  local is_left_or_right = M.View.side == "left" or M.View.side == "right"
+  if M.View.adaptive_size and is_left_or_right then
+    grow()
+  end
 end
 
 function M.resize(size)
@@ -224,11 +249,14 @@ function M.resize(size)
     return
   end
 
+  local new_size = get_size()
   if M.is_vertical() then
-    a.nvim_win_set_width(M.get_winnr(), get_size())
+    a.nvim_win_set_width(M.get_winnr(), new_size)
   else
-    a.nvim_win_set_height(M.get_winnr(), get_size())
+    a.nvim_win_set_height(M.get_winnr(), new_size)
   end
+
+  events._dispatch_on_tree_resize(new_size)
 
   if not M.View.preserve_window_proportions then
     vim.cmd ":wincmd ="
@@ -267,7 +295,7 @@ end
 function M.is_visible(opts)
   if opts and opts.any_tabpage then
     for _, v in pairs(M.View.tabpages) do
-      if a.nvim_win_is_valid(v.winnr) then
+      if v.winnr and a.nvim_win_is_valid(v.winnr) then
         return true
       end
     end
@@ -375,8 +403,8 @@ function M._prevent_buffer_override()
     vim.cmd "setlocal nowinfixheight"
     M.open { focus_tree = false }
     require("nvim-tree.renderer").draw()
-    a.nvim_win_close(curwin, { force = true })
-    require("nvim-tree.actions.open-file").fn("edit", bufname)
+    pcall(a.nvim_win_close, curwin, { force = true })
+    require("nvim-tree.actions.node.open-file").fn("edit", bufname)
   end)
 end
 
@@ -386,9 +414,12 @@ end
 
 function M.setup(opts)
   local options = opts.view or {}
+  M.View.adaptive_size = options.adaptive_size
+  M.View.centralize_selection = options.centralize_selection
   M.View.side = options.side
   M.View.width = options.width
   M.View.height = options.height
+  M.View.initial_width = get_size()
   M.View.hide_root_folder = options.hide_root_folder
   M.View.preserve_window_proportions = options.preserve_window_proportions
   M.View.winopts.number = options.number

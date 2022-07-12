@@ -6,15 +6,7 @@ local log = require "nvim-tree.log"
 
 local M = {}
 
-local function get_lowest_severity(diagnostics)
-  local severity = math.huge
-  for _, v in ipairs(diagnostics) do
-    if v.severity < severity then
-      severity = v.severity
-    end
-  end
-  return severity
-end
+local GROUP = "NvimTreeDiagnosticSigns"
 
 local severity_levels = { Error = 1, Warning = 2, Information = 3, Hint = 4 }
 local sign_names = {
@@ -24,43 +16,25 @@ local sign_names = {
   { "NvimTreeSignHint", "NvimTreeLspDiagnosticsHint" },
 }
 
-local signs = {}
-
 local function add_sign(linenr, severity)
   local buf = view.get_bufnr()
   if not a.nvim_buf_is_valid(buf) or not a.nvim_buf_is_loaded(buf) then
     return
   end
   local sign_name = sign_names[severity][1]
-  table.insert(signs, vim.fn.sign_place(1, "NvimTreeDiagnosticSigns", sign_name, buf, { lnum = linenr + 1 }))
+  vim.fn.sign_place(0, GROUP, sign_name, buf, { lnum = linenr, priority = 2 })
 end
 
 local function from_nvim_lsp()
   local buffer_severity = {}
 
-  -- vim.lsp.diagnostic.get_all was deprecated in nvim 0.7 and replaced with vim.diagnostic.get
-  -- This conditional can be removed when the minimum required version of nvim is changed to 0.7.
-  if vim.diagnostic then
-    -- nvim version >= 0.7
-    for _, diagnostic in ipairs(vim.diagnostic.get()) do
-      local buf = diagnostic.bufnr
-      if a.nvim_buf_is_valid(buf) then
-        local bufname = a.nvim_buf_get_name(buf)
-        local lowest_severity = buffer_severity[bufname]
-        if not lowest_severity or diagnostic.severity < lowest_severity then
-          buffer_severity[bufname] = diagnostic.severity
-        end
-      end
-    end
-  else
-    -- nvim version < 0.7
-    for buf, diagnostics in pairs(vim.lsp.diagnostic.get_all()) do
-      if a.nvim_buf_is_valid(buf) then
-        local bufname = a.nvim_buf_get_name(buf)
-        if not buffer_severity[bufname] then
-          local severity = get_lowest_severity(diagnostics)
-          buffer_severity[bufname] = severity
-        end
+  for _, diagnostic in ipairs(vim.diagnostic.get()) do
+    local buf = diagnostic.bufnr
+    if a.nvim_buf_is_valid(buf) then
+      local bufname = a.nvim_buf_get_name(buf)
+      local lowest_severity = buffer_severity[bufname]
+      if not lowest_severity or diagnostic.severity < lowest_severity then
+        buffer_severity[bufname] = diagnostic.severity
       end
     end
   end
@@ -109,16 +83,7 @@ function M.clear()
     return
   end
 
-  if #signs then
-    vim.fn.sign_unplacelist(vim.tbl_map(function(sign)
-      return {
-        buffer = view.get_bufnr(),
-        group = "NvimTreeDiagnosticSigns",
-        id = sign,
-      }
-    end, signs))
-    signs = {}
-  end
+  vim.fn.sign_unplace(GROUP)
 end
 
 function M.update()
@@ -136,22 +101,28 @@ function M.update()
   end
 
   M.clear()
+
+  local nodes_by_line = utils.get_nodes_by_line(core.get_explorer().nodes, core.get_nodes_starting_line())
+  for _, node in pairs(nodes_by_line) do
+    node.diag_status = nil
+  end
+
   for bufname, severity in pairs(buffer_severity) do
     local bufpath = utils.canonical_path(bufname)
     log.line("diagnostics", " bufpath '%s' severity %d", bufpath, severity)
     if 0 < severity and severity < 5 then
-      local node, line = utils.find_node(core.get_explorer().nodes, function(node)
+      for line, node in pairs(nodes_by_line) do
         local nodepath = utils.canonical_path(node.absolute_path)
-        log.line("diagnostics", "  checking nodepath '%s'", nodepath)
-        if M.show_on_dirs and not node.open then
-          return vim.startswith(bufpath, nodepath)
-        else
-          return nodepath == bufpath
+        log.line("diagnostics", "  %d checking nodepath '%s'", line, nodepath)
+        if M.show_on_dirs and vim.startswith(bufpath, nodepath) then
+          log.line("diagnostics", " matched fold node '%s'", node.absolute_path)
+          node.diag_status = severity
+          add_sign(line, severity)
+        elseif nodepath == bufpath then
+          log.line("diagnostics", " matched file node '%s'", node.absolute_path)
+          node.diag_status = severity
+          add_sign(line, severity)
         end
-      end)
-      if node then
-        log.line("diagnostics", " matched node '%s'", node.absolute_path)
-        add_sign(line, severity)
       end
     end
   end
@@ -167,6 +138,11 @@ local links = {
 
 function M.setup(opts)
   M.enable = opts.diagnostics.enable
+
+  if M.enable then
+    log.line("diagnostics", "setup")
+  end
+
   M.show_on_dirs = opts.diagnostics.show_on_dirs
   vim.fn.sign_define(sign_names[1][1], { text = opts.diagnostics.icons.error, texthl = sign_names[1][2] })
   vim.fn.sign_define(sign_names[2][1], { text = opts.diagnostics.icons.warning, texthl = sign_names[2][2] })
@@ -175,11 +151,6 @@ function M.setup(opts)
 
   for lhs, rhs in pairs(links) do
     vim.cmd("hi def link " .. lhs .. " " .. rhs)
-  end
-
-  if M.enable then
-    log.line("diagnostics", "setup")
-    vim.cmd "au DiagnosticChanged * lua require'nvim-tree.diagnostics'.update()"
   end
 end
 

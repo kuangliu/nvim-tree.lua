@@ -1,5 +1,4 @@
 local git = require "nvim-tree.git"
-local diagnostics = require "nvim-tree.diagnostics"
 local view = require "nvim-tree.view"
 local renderer = require "nvim-tree.renderer"
 local explorer_module = require "nvim-tree.explorer"
@@ -19,7 +18,7 @@ local function refresh_nodes(node, projects)
 end
 
 function M.reload_node_status(parent_node, projects)
-  local project_root = git.get_project_root(parent_node.absolute_path or parent_node.cwd)
+  local project_root = git.get_project_root(parent_node.absolute_path)
   local status = projects[project_root] or {}
   for _, node in ipairs(parent_node.nodes) do
     if node.nodes then
@@ -45,7 +44,6 @@ function M.reload_explorer()
   if view.is_visible() then
     renderer.draw()
   end
-  diagnostics.update()
   event_running = false
 end
 
