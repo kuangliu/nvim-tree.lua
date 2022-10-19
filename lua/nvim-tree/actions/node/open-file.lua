@@ -7,18 +7,12 @@ local view = require "nvim-tree.view"
 
 local M = {}
 
-local function get_split_cmd()
-  local side = view.View.side
-  if side == "right" then
-    return "aboveleft"
+local function get_user_input_char()
+  local c = vim.fn.getchar()
+  while type(c) ~= "number" do
+    c = vim.fn.getchar()
   end
-  if side == "left" then
-    return "belowright"
-  end
-  if side == "top" then
-    return "bot"
-  end
-  return "top"
+  return vim.fn.nr2char(c)
 end
 
 ---Get user to pick a window. Selectable windows are all windows in the current
@@ -102,7 +96,7 @@ local function pick_window()
   if vim.opt.cmdheight._value ~= 0 then
     print "Pick window: "
   end
-  local _, resp = pcall(utils.get_user_input_char)
+  local _, resp = pcall(get_user_input_char)
   resp = (resp or ""):upper()
   utils.clear_prompt()
 
@@ -173,10 +167,11 @@ end
 
 -- This is only to avoid the BufEnter for nvim-tree to trigger
 -- which would cause find-file to run on an invalid file.
-local function set_current_win_no_autocmd(winid)
-  vim.cmd "set ei=BufEnter"
+local function set_current_win_no_autocmd(winid, autocmd)
+  local eventignore = vim.opt.eventignore:get()
+  vim.opt.eventignore:append(autocmd)
   api.nvim_set_current_win(winid)
-  vim.cmd 'set ei=""'
+  vim.opt.eventignore = eventignore
 end
 
 local function open_in_new_window(filename, mode, win_ids)
@@ -184,51 +179,49 @@ local function open_in_new_window(filename, mode, win_ids)
   if not target_winid then
     return
   end
-  local do_split = mode == "split" or mode == "vsplit"
-  local vertical = mode ~= "split"
+
+  local create_new_window = #api.nvim_list_wins() == 1
+  local new_window_side = (view.View.side == "right") and "aboveleft" or "belowright"
 
   -- Target is invalid or window does not exist in current tabpage: create new window
-  if not target_winid or not vim.tbl_contains(win_ids, target_winid) then
-    local split_cmd = get_split_cmd()
-    local splitside = view.is_vertical() and "vsp" or "sp"
-    vim.cmd(split_cmd .. " " .. splitside)
+  if not vim.tbl_contains(win_ids, target_winid) then
+    vim.cmd(new_window_side .. " vsplit")
     target_winid = api.nvim_get_current_win()
     lib.target_winid = target_winid
 
     -- No need to split, as we created a new window.
-    do_split = false
+    create_new_window = false
   elseif not vim.o.hidden then
     -- If `hidden` is not enabled, check if buffer in target window is
     -- modified, and create new split if it is.
     local target_bufid = api.nvim_win_get_buf(target_winid)
     if api.nvim_buf_get_option(target_bufid, "modified") then
-      do_split = true
+      mode = "vsplit"
     end
   end
 
   local fname = vim.fn.fnameescape(filename)
 
   local cmd
-  if do_split or #api.nvim_list_wins() == 1 then
-    cmd = string.format("%ssplit %s", vertical and "vertical " or "", fname)
+  if create_new_window then
+    cmd = string.format("%s vsplit %s", new_window_side, fname)
+  elseif mode:match "split$" then
+    cmd = string.format("%s %s", mode, fname)
   else
     cmd = string.format("edit %s", fname)
   end
 
-  set_current_win_no_autocmd(target_winid)
-  pcall(vim.cmd, cmd)
-  lib.set_target_win()
-end
-
-local function is_already_open(filename, win_ids)
-  for _, id in ipairs(win_ids) do
-    if filename == api.nvim_buf_get_name(api.nvim_win_get_buf(id)) then
-      api.nvim_set_current_win(id)
-      return true
-    end
+  if mode == "preview" and view.View.float.enable then
+    -- ignore "WinLeave" autocmd on preview
+    -- because the registered "WinLeave"
+    -- will kill the floating window immediately
+    set_current_win_no_autocmd(target_winid, { "WinLeave", "BufEnter" })
+  else
+    set_current_win_no_autocmd(target_winid, { "BufEnter" })
   end
 
-  return false
+  pcall(vim.cmd, cmd)
+  lib.set_target_win()
 end
 
 local function is_already_loaded(filename)
@@ -258,13 +251,16 @@ function M.fn(mode, filename)
   local win_ids = api.nvim_tabpage_list_wins(tabpage)
   local buf_loaded = is_already_loaded(filename)
 
-  local found = is_already_open(filename, win_ids)
-  if found and mode == "preview" then
+  local found_win = utils.get_win_buf_from_path(filename)
+  if found_win and mode == "preview" then
     return
   end
 
-  if not found then
+  if not found_win then
     open_in_new_window(filename, mode, win_ids)
+  else
+    api.nvim_set_current_win(found_win)
+    vim.bo.bufhidden = ""
   end
 
   if M.resize_window then

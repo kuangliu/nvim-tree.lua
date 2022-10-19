@@ -84,7 +84,7 @@ function Runner:_run_git_job()
 
   local opts = self:_getopts(stdout, stderr)
   log.line("git", "running job with timeout %dms", self.timeout)
-  log.line("git", "git %s", table.concat(opts.args, " "))
+  log.line("git", "git %s", table.concat(utils.array_remove_nils(opts.args), " "))
 
   handle, pid = uv.spawn(
     "git",
@@ -147,11 +147,11 @@ function Runner.run(opts)
   log.profile_end(ps, "git job %s %s", opts.project_root, opts.path)
 
   if self.rc == -1 then
-    log.line("git", "job timed out")
+    log.line("git", "job timed out  %s %s", opts.project_root, opts.path)
   elseif self.rc ~= 0 then
-    log.line("git", "job failed with return code %d", self.rc)
+    log.line("git", "job fail rc %d %s %s", self.rc, opts.project_root, opts.path)
   else
-    log.line("git", "job success")
+    log.line("git", "job success    %s %s", opts.project_root, opts.path)
   end
 
   return self.output

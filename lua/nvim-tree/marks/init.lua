@@ -7,7 +7,7 @@ local NvimTreeMarks = {}
 local M = {}
 
 local function add_mark(node)
-  NvimTreeMarks[node.absolute_path] = true
+  NvimTreeMarks[node.absolute_path] = node
   M.draw()
 end
 
@@ -17,6 +17,10 @@ local function remove_mark(node)
 end
 
 function M.toggle_mark(node)
+  if node.absolute_path == nil then
+    return
+  end
+
   if M.get_mark(node) then
     remove_mark(node)
   else
@@ -30,8 +34,8 @@ end
 
 function M.get_marks()
   local list = {}
-  for k in pairs(NvimTreeMarks) do
-    table.insert(list, k)
+  for _, node in pairs(NvimTreeMarks) do
+    table.insert(list, node)
   end
   return list
 end
@@ -51,13 +55,14 @@ function M.draw()
   M.clear()
 
   local buf = view.get_bufnr()
+  local add = core.get_nodes_starting_line() - 1
   Iterator.builder(core.get_explorer().nodes)
     :recursor(function(node)
       return node.open and node.nodes
     end)
     :applier(function(node, idx)
       if M.get_mark(node) then
-        vim.fn.sign_place(0, GROUP, SIGN_NAME, buf, { lnum = idx + 1, priority = 3 })
+        vim.fn.sign_place(0, GROUP, SIGN_NAME, buf, { lnum = idx + add, priority = 3 })
       end
     end)
     :iterate()
@@ -65,6 +70,7 @@ end
 
 function M.setup(opts)
   vim.fn.sign_define(SIGN_NAME, { text = opts.renderer.icons.glyphs.bookmark, texthl = "NvimTreeBookmark" })
+  require("nvim-tree.marks.bulk-move").setup(opts)
 end
 
 return M

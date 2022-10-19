@@ -1,4 +1,3 @@
-local a = vim.api
 local uv = vim.loop
 
 local lib = require "nvim-tree.lib"
@@ -82,32 +81,36 @@ local function do_single_paste(source, dest, action_type, action_fn)
 
   dest_stats, errmsg, errcode = uv.fs_stat(dest)
   if not dest_stats and errcode ~= "ENOENT" then
-    a.nvim_err_writeln("Could not " .. action_type .. " " .. source .. " - " .. (errmsg or "???"))
+    utils.notify.error("Could not " .. action_type .. " " .. source .. " - " .. (errmsg or "???"))
     return false, errmsg
   end
 
-  local should_process = true
-  local should_rename = false
-
-  if dest_stats then
-    print(dest .. " already exists. Overwrite? y/n/r(ename)")
-    local ans = utils.get_user_input_char()
-    utils.clear_prompt()
-    should_process = ans:match "^y"
-    should_rename = ans:match "^r"
-  end
-
-  if should_rename then
-    local new_dest = vim.fn.input("New name: ", dest)
-    return do_single_paste(source, new_dest, action_type, action_fn)
-  end
-
-  if should_process then
+  local function on_process()
     success, errmsg = action_fn(source, dest)
     if not success then
-      a.nvim_err_writeln("Could not " .. action_type .. " " .. source .. " - " .. (errmsg or "???"))
+      utils.notify.error("Could not " .. action_type .. " " .. source .. " - " .. (errmsg or "???"))
       return false, errmsg
     end
+  end
+
+  if dest_stats then
+    local prompt_select = "Overwrite " .. dest .. " ?"
+    local prompt_input = prompt_select .. " y/n/r(ename): "
+    lib.prompt(prompt_input, prompt_select, { "y", "n", "r" }, { "Yes", "No", "Rename" }, function(item_short)
+      utils.clear_prompt()
+      if item_short == "y" then
+        on_process()
+      elseif item_short == "r" then
+        vim.ui.input({ prompt = "Rename to ", default = dest, completion = "dir" }, function(new_dest)
+          utils.clear_prompt()
+          if new_dest then
+            do_single_paste(source, new_dest, action_type, action_fn)
+          end
+        end)
+      end
+    end)
+  else
+    on_process()
   end
 end
 
@@ -119,11 +122,11 @@ local function add_to_clipboard(node, clip)
   for idx, _node in ipairs(clip) do
     if _node.absolute_path == node.absolute_path then
       table.remove(clip, idx)
-      return a.nvim_out_write(node.absolute_path .. " removed to clipboard.\n")
+      return utils.notify.info(node.absolute_path .. " removed to clipboard.")
     end
   end
   table.insert(clip, node)
-  a.nvim_out_write(node.absolute_path .. " added to clipboard.\n")
+  utils.notify.info(node.absolute_path .. " added to clipboard.")
 end
 
 function M.copy(node)
@@ -148,7 +151,7 @@ local function do_paste(node, action_type, action_fn)
   local stats, errmsg, errcode = uv.fs_stat(destination)
   if not stats and errcode ~= "ENOENT" then
     log.line("copy_paste", "do_paste fs_stat '%s' failed '%s'", destination, errmsg)
-    a.nvim_err_writeln("Could not " .. action_type .. " " .. destination .. " - " .. (errmsg or "???"))
+    utils.notify.error("Could not " .. action_type .. " " .. destination .. " - " .. (errmsg or "???"))
     return
   end
   local is_dir = stats and stats.type == "directory"
@@ -210,18 +213,18 @@ function M.print_clipboard()
     end
   end
 
-  return a.nvim_out_write(table.concat(content, "\n") .. "\n")
+  return utils.notify.info(table.concat(content, "\n") .. "\n")
 end
 
 local function copy_to_clipboard(content)
   if M.use_system_clipboard == true then
     vim.fn.setreg("+", content)
     vim.fn.setreg('"', content)
-    return a.nvim_out_write(string.format("Copied %s to system clipboard! \n", content))
+    return utils.notify.info(string.format("Copied %s to system clipboard!", content))
   else
     vim.fn.setreg('"', content)
     vim.fn.setreg("1", content)
-    return a.nvim_out_write(string.format("Copied %s to neovim clipboard \n", content))
+    return utils.notify.info(string.format("Copied %s to neovim clipboard!", content))
   end
 end
 

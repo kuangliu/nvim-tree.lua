@@ -28,15 +28,15 @@ local Actions = {
 
   -- Movements in tree
   close_node = require("nvim-tree.actions.moves.parent").fn(true),
-  first_sibling = require("nvim-tree.actions.moves.sibling").fn(-math.huge),
-  last_sibling = require("nvim-tree.actions.moves.sibling").fn(math.huge),
+  first_sibling = require("nvim-tree.actions.moves.sibling").fn "first",
+  last_sibling = require("nvim-tree.actions.moves.sibling").fn "last",
   next_diag_item = require("nvim-tree.actions.moves.item").fn("next", "diag"),
   next_git_item = require("nvim-tree.actions.moves.item").fn("next", "git"),
-  next_sibling = require("nvim-tree.actions.moves.sibling").fn(1),
+  next_sibling = require("nvim-tree.actions.moves.sibling").fn "next",
   parent_node = require("nvim-tree.actions.moves.parent").fn(false),
   prev_diag_item = require("nvim-tree.actions.moves.item").fn("prev", "diag"),
   prev_git_item = require("nvim-tree.actions.moves.item").fn("prev", "git"),
-  prev_sibling = require("nvim-tree.actions.moves.sibling").fn(-1),
+  prev_sibling = require("nvim-tree.actions.moves.sibling").fn "prev",
 
   -- Other types
   refresh = require("nvim-tree.actions.reloaders.reloaders").reload_explorer,
@@ -46,6 +46,7 @@ local Actions = {
   toggle_file_info = require("nvim-tree.actions.node.file-popup").toggle_file_info,
   system_open = require("nvim-tree.actions.node.system-open").fn,
   toggle_mark = require("nvim-tree.marks").toggle_mark,
+  bulk_move = require("nvim-tree.marks.bulk-move").bulk_move,
 }
 
 local function handle_action_on_help_ui(action)
@@ -113,7 +114,7 @@ end
 function M.dispatch(action)
   if view.is_help_ui() or action == "toggle_help" then
     handle_action_on_help_ui(action)
-  elseif action:match "live" ~= nil then
+  elseif action == "live_filter" or action == "clear_live_filter" then
     handle_filter_actions(action)
   else
     handle_tree_actions(action)

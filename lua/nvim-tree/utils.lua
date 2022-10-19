@@ -10,20 +10,29 @@ local M = {
 }
 
 M.is_windows = vim.fn.has "win32" == 1 or vim.fn.has "win32unix" == 1
+M.is_wsl = vim.fn.has "wsl" == 1
 
 function M.path_to_matching_str(path)
   return path:gsub("(%-)", "(%%-)"):gsub("(%.)", "(%%.)"):gsub("(%_)", "(%%_)")
 end
 
-function M.warn(msg)
-  vim.schedule(function()
-    if has_notify then
-      notify(msg, vim.log.levels.WARN, { title = "NvimTree" })
-    else
-      vim.notify("[NvimTree] " .. msg, vim.log.levels.WARN)
-    end
-  end)
+local function notify_level(level)
+  return function(msg)
+    vim.schedule(function()
+      if has_notify then
+        notify(msg, level, { title = "NvimTree" })
+      else
+        vim.notify("[NvimTree] " .. msg, level)
+      end
+    end)
+  end
 end
+
+M.notify = {}
+M.notify.warn = notify_level(vim.log.levels.WARN)
+M.notify.error = notify_level(vim.log.levels.ERROR)
+M.notify.info = notify_level(vim.log.levels.INFO)
+M.notify.debug = notify_level(vim.log.levels.DEBUG)
 
 function M.str_find(haystack, needle)
   return vim.fn.stridx(haystack, needle) ~= -1
@@ -88,18 +97,6 @@ end
 
 M.path_separator = path_separator
 
-function M.clear_prompt()
-  vim.api.nvim_command "normal! :"
-end
-
-function M.get_user_input_char()
-  local c = vim.fn.getchar()
-  while type(c) ~= "number" do
-    c = vim.fn.getchar()
-  end
-  return vim.fn.nr2char(c)
-end
-
 -- get the node and index of the node from the tree that matches the predicate.
 -- The explored nodes are those displayed on the view.
 -- @param nodes list of node
@@ -120,6 +117,12 @@ end
 -- (grouped or hidden too)
 function M.get_node_from_path(path)
   local explorer = require("nvim-tree.core").get_explorer()
+
+  -- tree may not yet be loaded
+  if not explorer then
+    return
+  end
+
   if explorer.absolute_path == path then
     return explorer
   end
@@ -173,15 +176,58 @@ end
 ---Matching executable files in Windows.
 ---@param ext string
 ---@return boolean
-local PATHEXT = vim.env.PATHEXT or ""
-local wexe = vim.split(PATHEXT:gsub("%.", ""), ";")
-local pathexts = {}
-for _, v in pairs(wexe) do
-  pathexts[v] = true
+function M.is_windows_exe(ext)
+  if not M.pathexts then
+    if not vim.env.PATHEXT then
+      return false
+    end
+
+    local wexe = vim.split(vim.env.PATHEXT:gsub("%.", ""), ";")
+    M.pathexts = {}
+    for _, v in pairs(wexe) do
+      M.pathexts[v] = true
+    end
+  end
+
+  return M.pathexts[ext:upper()]
 end
 
-function M.is_windows_exe(ext)
-  return pathexts[ext:upper()]
+--- Check whether path maps to Windows filesystem mounted by WSL
+-- @param path string
+-- @return boolean
+function M.is_wsl_windows_fs_path(path)
+  -- Run 'wslpath' command to try translating WSL path to Windows path.
+  -- Consume stderr output as well because 'wslpath' can produce permission
+  -- errors on some files (e.g. temporary files in root of system drive).
+  local handle = io.popen('wslpath -w "' .. path .. '" 2>/dev/null')
+  if handle then
+    local output = handle:read "*a"
+    handle:close()
+
+    return string.find(output, "^\\\\wsl$\\") == nil
+  end
+
+  return false
+end
+
+--- Check whether extension is Windows executable under WSL
+-- @param ext string
+-- @return boolean
+function M.is_wsl_windows_fs_exe(ext)
+  if not vim.env.PATHEXT then
+    -- Extract executable extensions from within WSL.
+    -- Redirect stderr to null to silence warnings when
+    -- Windows command is executed from Linux filesystem:
+    -- > CMD.EXE was started with the above path as the current directory.
+    -- > UNC paths are not supported. Defaulting to Windows directory.
+    local handle = io.popen 'cmd.exe /c "echo %PATHEXT%" 2>/dev/null'
+    if handle then
+      vim.env.PATHEXT = handle:read "*a"
+      handle:close()
+    end
+  end
+
+  return M.is_windows_exe(ext)
 end
 
 function M.rename_loaded_buffers(old_path, new_path)
@@ -260,7 +306,7 @@ function M.move_missing_val(src, src_path, src_pos, dst, dst_path, dst_pos)
     dst_pos = { dst_pos, "string" },
   })
   if not ok then
-    M.warn("move_missing_val: " .. (err or "invalid arguments"))
+    M.notify.warn("move_missing_val: " .. (err or "invalid arguments"))
   end
 
   for pos in string.gmatch(src_path, "([^%.]+)%.*") do
@@ -307,25 +353,65 @@ function M.key_by(tbl, key)
   return keyed
 end
 
----Execute callback timeout ms after the lastest invocation with context. Waiting invocations for that context will be discarded. Caller should this ensure that callback performs the same or functionally equivalent actions.
+function M.bool_record(tbl, key)
+  local keyed = {}
+  for _, val in ipairs(tbl) do
+    keyed[val[key]] = true
+  end
+  return keyed
+end
+
+local function timer_stop_close(timer)
+  if timer:is_active() then
+    timer:stop()
+  end
+  if not timer:is_closing() then
+    timer:close()
+  end
+end
+
+---Execute callback timeout ms after the latest invocation with context.
+---Waiting invocations for that context will be discarded.
+---Invocation will be rescheduled while a callback is being executed.
+---Caller must ensure that callback performs the same or functionally equivalent actions.
+---
 ---@param context string identifies the callback to debounce
 ---@param timeout number ms to wait
 ---@param callback function to execute on completion
 function M.debounce(context, timeout, callback)
-  if M.debouncers[context] then
-    pcall(uv.close, M.debouncers[context])
+  -- all execution here is done in a synchronous context; no thread safety required
+
+  M.debouncers[context] = M.debouncers[context] or {}
+  local debouncer = M.debouncers[context]
+
+  -- cancel waiting or executing timer
+  if debouncer.timer then
+    timer_stop_close(debouncer.timer)
   end
 
-  M.debouncers[context] = uv.new_timer()
-  M.debouncers[context]:start(
-    timeout,
-    0,
-    vim.schedule_wrap(function()
-      M.debouncers[context]:close()
-      M.debouncers[context] = nil
+  local timer = uv.new_timer()
+  debouncer.timer = timer
+  timer:start(timeout, 0, function()
+    timer_stop_close(timer)
+
+    -- reschedule when callback is running
+    if debouncer.executing then
+      M.debounce(context, timeout, callback)
+      return
+    end
+
+    -- call back at a safe time
+    debouncer.executing = true
+    vim.schedule(function()
       callback()
+      debouncer.executing = false
+
+      -- no other timer waiting
+      if debouncer.timer == timer then
+        M.debouncers[context] = nil
+      end
     end)
-  )
+  end)
 end
 
 function M.focus_file(path)
@@ -333,6 +419,74 @@ function M.focus_file(path)
     return node.absolute_path == path
   end)
   require("nvim-tree.view").set_cursor { i + 1, 1 }
+end
+
+function M.get_win_buf_from_path(path)
+  for _, w in pairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local b = vim.api.nvim_win_get_buf(w)
+    if vim.api.nvim_buf_get_name(b) == path then
+      return w, b
+    end
+  end
+  return nil, nil
+end
+
+function M.clear_prompt()
+  if vim.opt.cmdheight._value ~= 0 then
+    vim.cmd "normal! :"
+  end
+end
+
+-- return a new table with values from array
+function M.array_shallow_clone(array)
+  local to = {}
+  for _, v in ipairs(array) do
+    table.insert(to, v)
+  end
+  return to
+end
+
+-- remove item from array if it exists
+function M.array_remove(array, item)
+  for i, v in ipairs(array) do
+    if v == item then
+      table.remove(array, i)
+      break
+    end
+  end
+end
+
+function M.array_remove_nils(array)
+  return vim.tbl_filter(function(v)
+    return v ~= nil
+  end, array)
+end
+
+function M.inject_node(f)
+  return function()
+    f(require("nvim-tree.lib").get_node_at_cursor())
+  end
+end
+
+---Is the buffer named NvimTree_[0-9]+ a tree? filetype is "NvimTree" or not readable file.
+---This is cheap, as the readable test should only ever be needed when resuming a vim session.
+---@param bufnr number may be 0 or nil for current
+---@return boolean
+function M.is_nvim_tree_buf(bufnr)
+  if bufnr == nil then
+    bufnr = 0
+  end
+  if vim.fn.bufexists(bufnr) then
+    local bufname = a.nvim_buf_get_name(bufnr)
+    if vim.fn.fnamemodify(bufname, ":t"):match "^NvimTree_[0-9]+$" then
+      if vim.bo[bufnr].filetype == "NvimTree" then
+        return true
+      elseif vim.fn.filereadable(bufname) == 0 then
+        return true
+      end
+    end
+  end
+  return false
 end
 
 return M

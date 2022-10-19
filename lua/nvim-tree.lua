@@ -71,14 +71,14 @@ end
 ---@deprecated
 M.on_keypress = require("nvim-tree.actions.dispatch").dispatch
 
-function M.toggle(find_file, no_focus, cwd)
+function M.toggle(find_file, no_focus, cwd, bang)
   if view.is_visible() then
     view.close()
   else
     local previous_buf = api.nvim_get_current_buf()
     M.open(cwd)
     if _config.update_focused_file.enable or find_file then
-      M.find_file(false, previous_buf)
+      M.find_file(false, previous_buf, bang)
     end
     if no_focus then
       vim.cmd "noautocmd wincmd p"
@@ -122,8 +122,11 @@ end
 function M.tab_change()
   if view.is_visible { any_tabpage = true } then
     local bufname = api.nvim_buf_get_name(0)
-    if bufname:match "Neogit" ~= nil or bufname:match "--graph" ~= nil then
-      return
+    local ft = api.nvim_buf_get_option(0, "ft")
+    for _, filter in ipairs(M.config.ignore_buf_on_tab_change) do
+      if bufname:match(filter) ~= nil or ft:match(filter) ~= nil then
+        return
+      end
     end
     view.open { focus_tree = false }
     require("nvim-tree.renderer").draw()
@@ -148,6 +151,9 @@ function M.find_file(with_open, bufnr, bang)
   end
 
   bufnr = bufnr or api.nvim_get_current_buf()
+  if not api.nvim_buf_is_valid(bufnr) then
+    return
+  end
   local bufname = api.nvim_buf_get_name(bufnr)
   local filepath = utils.canonical_path(vim.fn.fnamemodify(bufname, ":p"))
   if not is_file_readable(filepath) then
@@ -293,26 +299,26 @@ local function setup_vim_commands()
   api.nvim_create_user_command("NvimTreeOpen", function(res)
     M.open(res.args)
   end, { nargs = "?", complete = "dir" })
-  api.nvim_create_user_command("NvimTreeClose", view.close, {})
+  api.nvim_create_user_command("NvimTreeClose", view.close, { bar = true })
   api.nvim_create_user_command("NvimTreeToggle", function(res)
     M.toggle(false, false, res.args)
   end, { nargs = "?", complete = "dir" })
-  api.nvim_create_user_command("NvimTreeFocus", M.focus, {})
-  api.nvim_create_user_command("NvimTreeRefresh", reloaders.reload_explorer, {})
-  api.nvim_create_user_command("NvimTreeClipboard", copy_paste.print_clipboard, {})
+  api.nvim_create_user_command("NvimTreeFocus", M.focus, { bar = true })
+  api.nvim_create_user_command("NvimTreeRefresh", reloaders.reload_explorer, { bar = true })
+  api.nvim_create_user_command("NvimTreeClipboard", copy_paste.print_clipboard, { bar = true })
   api.nvim_create_user_command("NvimTreeFindFile", function(res)
     M.find_file(true, nil, res.bang)
-  end, { bang = true })
+  end, { bang = true, bar = true })
   api.nvim_create_user_command("NvimTreeFindFileToggle", function(res)
-    M.toggle(true, false, res.args)
-  end, { nargs = "?", complete = "dir" })
+    M.toggle(true, false, res.args, res.bang)
+  end, { bang = true, nargs = "?", complete = "dir" })
   api.nvim_create_user_command("NvimTreeResize", function(res)
     M.resize(res.args)
-  end, { nargs = 1 })
-  api.nvim_create_user_command("NvimTreeCollapse", collapse_all.fn, {})
+  end, { nargs = 1, bar = true })
+  api.nvim_create_user_command("NvimTreeCollapse", collapse_all.fn, { bar = true })
   api.nvim_create_user_command("NvimTreeCollapseKeepBuffers", function()
     collapse_all.fn(true)
-  end, {})
+  end, { bar = true })
 end
 
 function M.change_dir(name)
@@ -333,6 +339,16 @@ local function setup_autocommands(opts)
   -- reset highlights when colorscheme is changed
   create_nvim_tree_autocmd("ColorScheme", { callback = M.reset_highlight })
 
+  -- prevent new opened file from opening in the same window as nvim-tree
+  create_nvim_tree_autocmd("BufWipeout", {
+    pattern = "NvimTree_*",
+    callback = function()
+      if utils.is_nvim_tree_buf(0) then
+        view._prevent_buffer_override()
+      end
+    end,
+  })
+
   local has_watchers = opts.filesystem_watchers.enable
 
   if opts.auto_reload_on_write and not has_watchers then
@@ -347,10 +363,17 @@ local function setup_autocommands(opts)
   end
 
   if opts.open_on_tab then
-    create_nvim_tree_autocmd("TabEnter", { callback = M.tab_change })
+    create_nvim_tree_autocmd("TabEnter", { callback = vim.schedule_wrap(M.tab_change) })
   end
   if opts.hijack_cursor then
-    create_nvim_tree_autocmd("CursorMoved", { pattern = "NvimTree_*", callback = M.place_cursor_on_node })
+    create_nvim_tree_autocmd("CursorMoved", {
+      pattern = "NvimTree_*",
+      callback = function()
+        if utils.is_nvim_tree_buf(0) then
+          M.place_cursor_on_node()
+        end
+      end,
+    })
   end
   if opts.sync_root_with_cwd then
     create_nvim_tree_autocmd("DirChanged", {
@@ -367,27 +390,30 @@ local function setup_autocommands(opts)
     })
   end
 
-  if not opts.actions.open_file.quit_on_open then
-    create_nvim_tree_autocmd("BufWipeout", { pattern = "NvimTree_*", callback = view._prevent_buffer_override })
-  else
-    create_nvim_tree_autocmd("BufWipeout", { pattern = "NvimTree_*", callback = view.abandon_current_window })
-  end
-
   if opts.hijack_directories.enable then
     create_nvim_tree_autocmd({ "BufEnter", "BufNewFile" }, { callback = M.open_on_directory })
   end
 
   if opts.reload_on_bufenter and not has_watchers then
-    create_nvim_tree_autocmd("BufEnter", { pattern = "NvimTree_*", callback = reloaders.reload_explorer })
+    create_nvim_tree_autocmd("BufEnter", {
+      pattern = "NvimTree_*",
+      callback = function()
+        if utils.is_nvim_tree_buf(0) then
+          reloaders.reload_explorer()
+        end
+      end,
+    })
   end
 
   if opts.view.centralize_selection then
     create_nvim_tree_autocmd("BufEnter", {
       pattern = "NvimTree_*",
       callback = function()
+        local bufnr = api.nvim_get_current_buf()
         vim.schedule(function()
-          local keys = api.nvim_replace_termcodes("zz", true, false, true)
-          api.nvim_feedkeys(keys, "n", true)
+          api.nvim_buf_call(bufnr, function()
+            vim.cmd [[norm! zz]]
+          end)
         end)
       end,
     })
@@ -395,11 +421,28 @@ local function setup_autocommands(opts)
 
   if opts.diagnostics.enable then
     create_nvim_tree_autocmd("DiagnosticChanged", {
-      callback = require("nvim-tree.diagnostics").update,
+      callback = function()
+        log.line("diagnostics", "DiagnosticChanged")
+        require("nvim-tree.diagnostics").update()
+      end,
     })
     create_nvim_tree_autocmd("User", {
       pattern = "CocDiagnosticChange",
-      callback = require("nvim-tree.diagnostics").update,
+      callback = function()
+        log.line("diagnostics", "CocDiagnosticChange")
+        require("nvim-tree.diagnostics").update()
+      end,
+    })
+  end
+
+  if opts.view.float.enable and opts.view.float.quit_on_focus_loss then
+    create_nvim_tree_autocmd("WinLeave", {
+      pattern = "NvimTree_*",
+      callback = function()
+        if utils.is_nvim_tree_buf(0) then
+          view.close()
+        end
+      end,
     })
   end
 end
@@ -415,17 +458,20 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
   open_on_setup = false,
   open_on_setup_file = false,
   open_on_tab = false,
+  ignore_buf_on_tab_change = {},
   sort_by = "name",
   root_dirs = {},
   prefer_startup_root = false,
   sync_root_with_cwd = false,
   reload_on_bufenter = false,
   respect_buf_cwd = false,
+  on_attach = "disable",
+  remove_keymaps = false,
+  select_prompts = false,
   view = {
     adaptive_size = false,
     centralize_selection = false,
     width = 30,
-    height = 30,
     hide_root_folder = false,
     side = "left",
     preserve_window_proportions = false,
@@ -438,6 +484,18 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
         -- user mappings go here
       },
     },
+    float = {
+      enable = false,
+      quit_on_focus_loss = true,
+      open_win_config = {
+        relative = "editor",
+        border = "rounded",
+        width = 30,
+        height = 30,
+        row = 1,
+        col = 1,
+      },
+    },
   },
   renderer = {
     add_trailing = false,
@@ -446,13 +504,16 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
     full_name = false,
     highlight_opened_files = "none",
     root_folder_modifier = ":~",
+    indent_width = 2,
     indent_markers = {
       enable = false,
+      inline_arrows = true,
       icons = {
-        corner = "└ ",
-        edge = "│ ",
-        item = "│ ",
-        none = "  ",
+        corner = "└",
+        edge = "│",
+        item = "│",
+        bottom = "─",
+        none = " ",
       },
     },
     icons = {
@@ -511,6 +572,7 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
   diagnostics = {
     enable = false,
     show_on_dirs = false,
+    debounce_delay = 50,
     icons = {
       hint = "",
       info = "",
@@ -524,8 +586,7 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
     exclude = {},
   },
   filesystem_watchers = {
-    enable = false,
-    interval = 100,
+    enable = true,
     debounce_delay = 50,
   },
   git = {
@@ -544,6 +605,15 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
     expand_all = {
       max_folder_discovery = 300,
       exclude = {},
+    },
+    file_popup = {
+      open_win_config = {
+        col = 1,
+        row = 1,
+        relative = "cursor",
+        border = "shadow",
+        style = "minimal",
+      },
     },
     open_file = {
       quit_on_open = false,
@@ -576,6 +646,7 @@ local DEFAULT_OPTS = { -- BEGIN_DEFAULT_OPTS
       all = false,
       config = false,
       copy_paste = false,
+      dev = false,
       diagnostics = false,
       git = false,
       profile = false,
@@ -588,9 +659,15 @@ local function merge_options(conf)
   return vim.tbl_deep_extend("force", DEFAULT_OPTS, conf or {})
 end
 
+local FIELD_SKIP_VALIDATE = {
+  open_win_config = true,
+}
+
 local FIELD_OVERRIDE_TYPECHECK = {
   width = { string = true, ["function"] = true, number = true },
-  height = { string = true, ["function"] = true, number = true },
+  remove_keymaps = { boolean = true, table = true },
+  on_attach = { ["function"] = true, string = true },
+  sort_by = { ["function"] = true, string = true },
 }
 
 local function validate_options(conf)
@@ -603,25 +680,27 @@ local function validate_options(conf)
     end
 
     for k, v in pairs(user) do
-      local invalid
-      local override_typecheck = FIELD_OVERRIDE_TYPECHECK[k] or {}
-      if def[k] == nil then
-        -- option does not exist
-        invalid = string.format("unknown option: %s%s", prefix, k)
-      elseif type(v) ~= type(def[k]) and not override_typecheck[type(v)] then
-        -- option is of the wrong type and is not a function
-        invalid = string.format("invalid option: %s%s expected: %s actual: %s", prefix, k, type(def[k]), type(v))
-      end
-
-      if invalid then
-        if msg then
-          msg = string.format("%s | %s", msg, invalid)
-        else
-          msg = string.format("%s", invalid)
+      if not FIELD_SKIP_VALIDATE[k] then
+        local invalid
+        local override_typecheck = FIELD_OVERRIDE_TYPECHECK[k] or {}
+        if def[k] == nil then
+          -- option does not exist
+          invalid = string.format("unknown option: %s%s", prefix, k)
+        elseif type(v) ~= type(def[k]) and not override_typecheck[type(v)] then
+          -- option is of the wrong type and is not a function
+          invalid = string.format("invalid option: %s%s expected: %s actual: %s", prefix, k, type(def[k]), type(v))
         end
-        user[k] = nil
-      else
-        validate(v, def[k], prefix .. k .. ".")
+
+        if invalid then
+          if msg then
+            msg = string.format("%s | %s", msg, invalid)
+          else
+            msg = string.format("%s", invalid)
+          end
+          user[k] = nil
+        else
+          validate(v, def[k], prefix .. k .. ".")
+        end
       end
     end
   end
@@ -629,13 +708,13 @@ local function validate_options(conf)
   validate(conf, DEFAULT_OPTS, "")
 
   if msg then
-    utils.warn(msg)
+    utils.notify.warn(msg .. " | see :help nvim-tree-setup for available configuration options")
   end
 end
 
 function M.setup(conf)
   if vim.fn.has "nvim-0.7" == 0 then
-    utils.warn "nvim-tree.lua requires Neovim 0.7 or higher"
+    utils.notify.warn "nvim-tree.lua requires Neovim 0.7 or higher"
     return
   end
 
@@ -655,6 +734,7 @@ function M.setup(conf)
   _config.open_on_setup_file = opts.open_on_setup_file
   _config.ignore_buffer_on_setup = opts.ignore_buffer_on_setup
   _config.ignore_ft_on_setup = opts.ignore_ft_on_setup
+  _config.ignore_buf_on_tab_change = opts.ignore_buf_on_tab_change
   _config.hijack_directories = opts.hijack_directories
   _config.hijack_directories.enable = _config.hijack_directories.enable and netrw_disabled
 
@@ -667,6 +747,7 @@ function M.setup(conf)
   log.raw("config", "%s\n", vim.inspect(opts))
 
   require("nvim-tree.actions").setup(opts)
+  require("nvim-tree.keymap").setup(opts)
   require("nvim-tree.colors").setup()
   require("nvim-tree.diagnostics").setup(opts)
   require("nvim-tree.explorer").setup(opts)

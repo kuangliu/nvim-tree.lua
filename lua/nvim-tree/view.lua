@@ -3,6 +3,7 @@ local a = vim.api
 local M = {}
 
 local events = require "nvim-tree.events"
+local utils = require "nvim-tree.utils"
 
 local function get_win_sep_hl()
   -- #1221 WinSeparator not present in nvim 0.6.1 and some builds of 0.7.0
@@ -28,13 +29,14 @@ M.View = {
     foldmethod = "manual",
     foldcolumn = "0",
     cursorcolumn = false,
-    cursorlineopt = "line",
+    cursorlineopt = "both",
     colorcolumn = "0",
     wrap = false,
     winhl = table.concat({
       "EndOfBuffer:NvimTreeEndOfBuffer",
       "Normal:NvimTreeNormal",
       "CursorLine:NvimTreeCursorLine",
+      "CursorLineNr:NvimTreeCursorLineNr",
       get_win_sep_hl(),
       "StatusLine:NvimTreeStatusLine",
       "StatusLineNC:NvimTreeStatuslineNC",
@@ -75,8 +77,8 @@ end
 
 local function wipe_rogue_buffer()
   for _, bufnr in ipairs(a.nvim_list_bufs()) do
-    if not matches_bufnr(bufnr) and a.nvim_buf_get_name(bufnr):match "NvimTree" ~= nil then
-      return pcall(a.nvim_buf_delete, bufnr, { force = true })
+    if not matches_bufnr(bufnr) and utils.is_nvim_tree_buf(bufnr) then
+      pcall(a.nvim_buf_delete, bufnr, { force = true })
     end
   end
 end
@@ -92,12 +94,16 @@ local function create_buffer(bufnr)
     vim.bo[M.get_bufnr()][option] = value
   end
 
-  require("nvim-tree.actions").apply_mappings(M.get_bufnr())
+  if type(M.on_attach) == "function" then
+    require("nvim-tree.keymap").set_keymaps(M.get_bufnr())
+    M.on_attach(M.get_bufnr())
+  else
+    require("nvim-tree.actions").apply_mappings(M.get_bufnr())
+  end
 end
 
 local function get_size()
-  local width_or_height = M.is_vertical() and "width" or "height"
-  local size = M.View[width_or_height]
+  local size = M.View.width
   if type(size) == "number" then
     return size
   elseif type(size) == "function" then
@@ -111,8 +117,6 @@ end
 local move_tbl = {
   left = "H",
   right = "L",
-  bottom = "J",
-  top = "K",
 }
 
 -- setup_tabpage sets up the initial state of a tab
@@ -128,9 +132,21 @@ local function set_window_options_and_buffer()
   end
 end
 
+local function open_win_config()
+  if type(M.View.float.open_win_config) == "function" then
+    return M.View.float.open_win_config()
+  else
+    return M.View.float.open_win_config
+  end
+end
+
 local function open_window()
-  a.nvim_command "vsp"
-  M.reposition_window()
+  if M.View.float.enable then
+    a.nvim_open_win(0, true, open_win_config())
+  else
+    a.nvim_command "vsp"
+    M.reposition_window()
+  end
   setup_tabpage(a.nvim_get_current_tabpage())
   set_window_options_and_buffer()
 end
@@ -179,10 +195,12 @@ function M.close()
   local current_win = a.nvim_get_current_win()
   for _, win in pairs(a.nvim_list_wins()) do
     if tree_win ~= win and a.nvim_win_get_config(win).relative == "" then
-      a.nvim_win_close(tree_win, true)
       local prev_win = vim.fn.winnr "#" -- this tab only
       if tree_win == current_win and prev_win > 0 then
         a.nvim_set_current_win(vim.fn.win_getid(prev_win))
+      end
+      if a.nvim_win_is_valid(tree_win) then
+        a.nvim_win_close(tree_win, true)
       end
       events._dispatch_on_tree_close()
       return
@@ -211,21 +229,27 @@ local function grow()
   local lines = vim.api.nvim_buf_get_lines(M.get_bufnr(), starts_at, -1, false)
   local max_length = M.View.initial_width
   for _, l in pairs(lines) do
-    if max_length < #l then
-      max_length = #l
+    local count = vim.fn.strchars(l) + 3 -- plus some padding
+    if max_length < count then
+      max_length = count
     end
   end
   M.resize(max_length)
 end
 
 function M.grow_from_content()
-  local is_left_or_right = M.View.side == "left" or M.View.side == "right"
-  if M.View.adaptive_size and is_left_or_right then
+  if M.View.adaptive_size then
     grow()
   end
 end
 
 function M.resize(size)
+  if M.View.float.enable and not M.View.adaptive_size then
+    -- if the floating windows's adaptive size is not desired, then the
+    -- float size should be defined in view.float.open_win_config
+    return
+  end
+
   if type(size) == "string" then
     size = vim.trim(size)
     local first_char = size:sub(1, 1)
@@ -250,11 +274,7 @@ function M.resize(size)
   end
 
   local new_size = get_size()
-  if M.is_vertical() then
-    a.nvim_win_set_width(M.get_winnr(), new_size)
-  else
-    a.nvim_win_set_height(M.get_winnr(), new_size)
-  end
+  a.nvim_win_set_width(M.get_winnr(), new_size)
 
   events._dispatch_on_tree_resize(new_size)
 
@@ -308,8 +328,6 @@ end
 function M.set_cursor(opts)
   if M.is_visible() then
     pcall(a.nvim_win_set_cursor, M.get_winnr(), opts)
-    -- patch until https://github.com/neovim/neovim/issues/17395 is fixed
-    require("nvim-tree.renderer").draw()
   end
 end
 
@@ -325,10 +343,6 @@ function M.focus(winnr, open_if_closed)
   end
 
   a.nvim_set_current_win(wnr)
-end
-
-function M.is_vertical()
-  return M.View.side == "left" or M.View.side == "right"
 end
 
 --- Restores the state of a NvimTree window if it was initialized before.
@@ -383,8 +397,10 @@ function M._prevent_buffer_override()
   -- Otherwise the curwin/curbuf would match the view buffer and the view window.
   vim.schedule(function()
     local curwin = a.nvim_get_current_win()
+    local curwinconfig = a.nvim_win_get_config(curwin)
     local curbuf = a.nvim_win_get_buf(curwin)
     local bufname = a.nvim_buf_get_name(curbuf)
+
     if not bufname:match "NvimTree" then
       for i, tabpage in ipairs(M.View.tabpages) do
         if tabpage.winnr == view_winnr then
@@ -404,7 +420,14 @@ function M._prevent_buffer_override()
     M.open { focus_tree = false }
     require("nvim-tree.renderer").draw()
     pcall(a.nvim_win_close, curwin, { force = true })
-    require("nvim-tree.actions.node.open-file").fn("edit", bufname)
+
+    -- to handle opening a file using :e when nvim-tree is on floating mode
+    -- falling back to the current window instead of creating a new one
+    if curwinconfig.relative ~= "" then
+      require("nvim-tree.actions.node.open-file").fn("edit_in_place", bufname)
+    else
+      require("nvim-tree.actions.node.open-file").fn("edit", bufname)
+    end
   end)
 end
 
@@ -416,7 +439,7 @@ function M.setup(opts)
   local options = opts.view or {}
   M.View.adaptive_size = options.adaptive_size
   M.View.centralize_selection = options.centralize_selection
-  M.View.side = options.side
+  M.View.side = (options.side == "right") and "right" or "left"
   M.View.width = options.width
   M.View.height = options.height
   M.View.initial_width = get_size()
@@ -425,6 +448,8 @@ function M.setup(opts)
   M.View.winopts.number = options.number
   M.View.winopts.relativenumber = options.relativenumber
   M.View.winopts.signcolumn = options.signcolumn
+  M.View.float = options.float
+  M.on_attach = opts.on_attach
 end
 
 return M

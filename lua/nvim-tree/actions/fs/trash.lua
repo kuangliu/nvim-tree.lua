@@ -1,5 +1,7 @@
 local a = vim.api
 
+local lib = require "nvim-tree.lib"
+
 local M = {
   config = {
     is_windows = vim.fn.has "win32" == 1 or vim.fn.has "win32unix" == 1,
@@ -41,13 +43,13 @@ function M.fn(node)
       M.config.trash.require_confirm = true
     end
   else
-    utils.warn "Trash is currently a UNIX only feature!"
+    utils.notify.warn "Trash is currently a UNIX only feature!"
     return
   end
 
   local binary = M.config.trash.cmd:gsub(" .*$", "")
   if vim.fn.executable(binary) == 0 then
-    utils.warn(binary .. " is not executable.")
+    utils.notify.warn(binary .. " is not executable.")
     return
   end
 
@@ -65,25 +67,11 @@ function M.fn(node)
     })
   end
 
-  local is_confirmed = true
-
-  -- confirmation prompt
-  if M.config.trash.require_confirm then
-    is_confirmed = false
-    print("Trash " .. node.name .. " ? y/n")
-    local ans = utils.get_user_input_char()
-    if ans:match "^y" then
-      is_confirmed = true
-    end
-    utils.clear_prompt()
-  end
-
-  -- trashing
-  if is_confirmed then
+  local function do_trash()
     if node.nodes ~= nil and not node.link_to then
       trash_path(function(_, rc)
         if rc ~= 0 then
-          utils.warn("trash failed: " .. err_msg .. "; please see :help nvim-tree.trash")
+          utils.notify.warn("trash failed: " .. err_msg .. "; please see :help nvim-tree.trash")
           return
         end
         events._dispatch_folder_removed(node.absolute_path)
@@ -94,7 +82,7 @@ function M.fn(node)
     else
       trash_path(function(_, rc)
         if rc ~= 0 then
-          utils.warn("trash failed: " .. err_msg .. "; please see :help nvim-tree.trash")
+          utils.notify.warn("trash failed: " .. err_msg .. "; please see :help nvim-tree.trash")
           return
         end
         events._dispatch_file_removed(node.absolute_path)
@@ -104,6 +92,19 @@ function M.fn(node)
         end
       end)
     end
+  end
+
+  if M.config.trash.require_confirm then
+    local prompt_select = "Trash " .. node.name .. " ?"
+    local prompt_input = prompt_select .. " y/n: "
+    lib.prompt(prompt_input, prompt_select, { "y", "n" }, { "Yes", "No" }, function(item_short)
+      utils.clear_prompt()
+      if item_short == "y" then
+        do_trash()
+      end
+    end)
+  else
+    do_trash()
   end
 end
 

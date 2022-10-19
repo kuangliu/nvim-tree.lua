@@ -19,10 +19,27 @@ local function update_parent_statuses(node, project, root)
 end
 
 local function is_git(path)
-  return path:match "%.git$" ~= nil or path:match(utils.path_add_trailing ".git") ~= nil
+  return vim.fn.fnamemodify(path, ":t") == ".git"
 end
 
-local function refresh_path(path)
+local IGNORED_PATHS = {
+  -- disable watchers on kernel filesystems
+  -- which have a lot of unwanted events
+  "/sys",
+  "/proc",
+  "/dev",
+}
+
+local function is_folder_ignored(path)
+  for _, folder in ipairs(IGNORED_PATHS) do
+    if vim.startswith(path, folder) then
+      return true
+    end
+  end
+  return false
+end
+
+function M.refresh_path(path)
   log.line("watcher", "node event executing '%s'", path)
   local n = utils.get_node_from_path(path)
   if not n then
@@ -41,27 +58,27 @@ function M.create_watcher(absolute_path)
   if not M.enabled then
     return nil
   end
-  if is_git(absolute_path) then
+  if is_git(absolute_path) or is_folder_ignored(absolute_path) then
     return nil
   end
 
-  log.line("watcher", "node start '%s'", absolute_path)
-  Watcher.new {
-    absolute_path = absolute_path,
-    interval = M.interval,
-    on_event = function(opts)
-      log.line("watcher", "node event scheduled '%s'", opts.absolute_path)
-      utils.debounce("explorer:watch:" .. opts.absolute_path, M.debounce_delay, function()
-        refresh_path(opts.absolute_path)
-      end)
-    end,
-  }
+  local function callback(watcher)
+    log.line("watcher", "node event scheduled %s", watcher.context)
+    utils.debounce(watcher.context, M.debounce_delay, function()
+      M.refresh_path(watcher._path)
+    end)
+  end
+
+  M.uid = M.uid + 1
+  return Watcher:new(absolute_path, callback, {
+    context = "explorer:watch:" .. absolute_path .. ":" .. M.uid,
+  })
 end
 
 function M.setup(opts)
   M.enabled = opts.filesystem_watchers.enable
-  M.interval = opts.filesystem_watchers.interval
   M.debounce_delay = opts.filesystem_watchers.debounce_delay
+  M.uid = 0
 end
 
 return M

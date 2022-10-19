@@ -1,3 +1,5 @@
+local uv = vim.loop
+
 local log = require "nvim-tree.log"
 local utils = require "nvim-tree.utils"
 local git_utils = require "nvim-tree.git.utils"
@@ -29,8 +31,8 @@ function M.reload_project(project_root, path)
     return
   end
 
-  if path and not path:match("^" .. project_root) then
-    path = nil
+  if path and path:find(project_root, 1, true) ~= 1 then
+    return
   end
 
   local git_status = Runner.run {
@@ -43,7 +45,7 @@ function M.reload_project(project_root, path)
 
   if path then
     for p in pairs(project.files) do
-      if p:match("^" .. path) then
+      if p:find(path, 1, true) == 1 then
         project.files[p] = nil
       end
     end
@@ -60,6 +62,10 @@ function M.get_project(project_root)
 end
 
 function M.get_project_root(cwd)
+  if not M.config.git.enable then
+    return nil
+  end
+
   if M.cwd_to_project_root[cwd] then
     return M.cwd_to_project_root[cwd]
   end
@@ -68,11 +74,20 @@ function M.get_project_root(cwd)
     return nil
   end
 
-  local project_root = git_utils.get_toplevel(cwd)
-  return project_root
+  local stat, _ = uv.fs_stat(cwd)
+  if not stat or stat.type ~= "directory" then
+    return nil
+  end
+
+  M.cwd_to_project_root[cwd] = git_utils.get_toplevel(cwd)
+  return M.cwd_to_project_root[cwd]
 end
 
 local function reload_tree_at(project_root)
+  if not M.config.git.enable then
+    return nil
+  end
+
   log.line("watcher", "git event executing '%s'", project_root)
   local root_node = utils.get_node_from_path(project_root)
   if not root_node then
@@ -128,21 +143,17 @@ function M.load_project_status(cwd)
   local watcher = nil
   if M.config.filesystem_watchers.enable then
     log.line("watcher", "git start")
-    watcher = Watcher.new {
-      absolute_path = utils.path_join { project_root, ".git" },
+
+    local callback = function(w)
+      log.line("watcher", "git event scheduled '%s'", w.project_root)
+      utils.debounce("git:watcher:" .. w.project_root, M.config.filesystem_watchers.debounce_delay, function()
+        reload_tree_at(w.project_root)
+      end)
+    end
+
+    watcher = Watcher:new(utils.path_join { project_root, ".git" }, callback, {
       project_root = project_root,
-      interval = M.config.filesystem_watchers.interval,
-      on_event = function(opts)
-        log.line("watcher", "git event scheduled '%s'", opts.project_root)
-        utils.debounce("git:watcher:" .. opts.project_root, M.config.filesystem_watchers.debounce_delay, function()
-          reload_tree_at(opts.project_root)
-        end)
-      end,
-      on_event0 = function()
-        log.line("watcher", "git event")
-        M.reload_tree_at(project_root)
-      end,
-    }
+    })
   end
 
   M.projects[project_root] = {
